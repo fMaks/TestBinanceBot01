@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Hosting;
+﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -19,16 +20,18 @@ public sealed class BinanceWsClient : BackgroundService
     int CountReconnect = 0;
 
     private ClientWebSocket? _ws;
+    private readonly string _connectionString;
 
     public BinanceWsClient(
-        //TradeRepository repo,
         ITradeBatchWriter batchWriter,
         IOptions<AppOptions> opt,
+        IConfiguration configuration,
         ILogger<BinanceWsClient> log)
     {
-        //_repo = repo;
         _batchWriter = batchWriter;
         _opt = opt.Value;
+        _connectionString = configuration.GetConnectionString("Postgres")
+                            ?? throw new InvalidOperationException("Missing 'Postgres' connection string");
         _log = log;
     }
 
@@ -37,7 +40,7 @@ public sealed class BinanceWsClient : BackgroundService
         var url = $"wss://stream.binance.com:9443/ws/{string.Join('/', _opt.Symbols.Select(s => $"{s.ToLower()}@trade"))}";
 
         // 🔹 Тест подключения к БД
-        using (var conn = new NpgsqlConnection(_opt.Postgres))
+        using (var conn = new NpgsqlConnection(_connectionString))
         {
             try
             {
