@@ -15,8 +15,9 @@ builder.Services.Configure<AppOptions>(
 
 builder.Services.AddScoped<TradeRepository>();
 
-builder.Services.AddSingleton<ITradeBatchWriter, TradeBatchWriter>();
-builder.Services.AddHostedService<TradeBatchWriter>(); // ← он же IHostedService
+//builder.Services.AddSingleton<ITradeBatchWriter, TradeBatchWriter>();
+//builder.Services.AddHostedService<TradeBatchWriter>(); // ← он же IHostedService
+builder.Services.AddSingleton<ITradeBatchWriter, DirectWriter>();
 builder.Services.AddHostedService<BinanceWsClient>();
 
 var host = builder.Build();

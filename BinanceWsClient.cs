@@ -180,6 +180,7 @@ public sealed class BinanceWsClient : BackgroundService
 
     private async Task HandleMessageAsync(string json, CancellationToken ct)
     {
+        
         try
         {
             using var doc = JsonDocument.Parse(json);
@@ -196,6 +197,7 @@ public sealed class BinanceWsClient : BackgroundService
             if (string.IsNullOrWhiteSpace(symbol)) return;
 
             // ✅ Защита от SQL-инъекции (если таблицы динамические)
+            //_log.LogInformation("📨 Added trade {Symbol} to batch", symbol);
             if (!IsValidSymbol(symbol))
             {
                 _log.LogWarning("Invalid symbol received: {Symbol}", symbol);

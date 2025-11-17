@@ -73,6 +73,8 @@ public sealed class TradeBatchWriter : ITradeBatchWriter, IHostedService
         var batch = new List<Trade>(200);
         var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250)); // 4 батча/сек
 
+        _logger.LogInformation("🚀 Batch processor started.");
+
         try
         {
             while (await timer.WaitForNextTickAsync(ct))

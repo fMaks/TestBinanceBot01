@@ -46,19 +46,6 @@ public sealed class TradeRepository
             var prices = trades.Select(t => t.Price).ToArray();
             var quantities = trades.Select(t => t.Quantity).ToArray();
 
-            /*
-            await using var cmd = new NpgsqlCommand(sql, conn, tx)
-            {
-                Parameters =
-            {
-                new NpgsqlParameter<string[]>("symbols", symbols),
-                new NpgsqlParameter<DateTime[]>("utimes", utimes),
-                new NpgsqlParameter<long[]>("tradeIds", tradeIds),
-                new NpgsqlParameter<decimal[]>("prices", prices),
-                new NpgsqlParameter<decimal[]>("quantities", quantities)
-            }
-            };
-            */
             await using var cmd = new NpgsqlCommand(sql, conn, tx);
 
             cmd.Parameters.Add(new NpgsqlParameter<string[]>("symbols", symbols));
@@ -70,8 +57,9 @@ public sealed class TradeRepository
             await cmd.ExecuteNonQueryAsync(ct);
             await tx.CommitAsync(ct);
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "💥 Failed to save batch of {Count} trades", trades.Count);
             await tx.RollbackAsync(ct);
             throw;
         }
@@ -84,13 +72,15 @@ public sealed class TradeRepository
     {
         try
         {
-            string sql = $"""INSERT INTO T_{trade.Symbol}(utime, trade_id, price, quantity ) VALUES ($1, $2, $3, $4);""";
+            string sql = $"""INSERT INTO trades(utime, trade_id, price, quantity ) VALUES ($1, $2, $3, $4);""";
             await using var conn = new NpgsqlConnection(_conn);
             await conn.OpenAsync(ct);
-            await using (var cmdc = new NpgsqlCommand($"create table if not exists T_{trade.Symbol} (utime timestamptz, trade_id bigint, price numeric, quantity numeric)", conn))
+            //long tUnixTime = ((DateTimeOffset)trade.TradeTime).ToUnixTimeSeconds();
+            await using (var cmdc = new NpgsqlCommand($"INSERT INTO trades VALUES('{trade.Symbol}', '{trade.TradeTime}', {trade.TradeId}, {trade.Price}, {trade.Quantity});", conn))
             {
                 await cmdc.ExecuteNonQueryAsync();
             }
+            /*
             await using var cmd = new NpgsqlCommand(sql, conn)
             {
                 Parameters =
@@ -102,10 +92,11 @@ public sealed class TradeRepository
             }
             };
             await cmd.ExecuteNonQueryAsync(ct);
+            */
         }
         catch (Exception ex)
         {
-            Console.WriteLine ("Failed to save trade for symbol {Symbol}: {TradeId}", trade.Symbol, trade.TradeId);
+            Console.WriteLine($"Failed to save trade for symbol {trade.Symbol}: {trade.TradeId}");
             Console.WriteLine (ex.Message);
             throw; // чтобы вызвался reconnect
         }
