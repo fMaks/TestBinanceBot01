@@ -1,8 +1,8 @@
-﻿// TradeBatchWriter.cs
-using Microsoft.Extensions.Hosting;
+﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.Threading.Channels;
+
 
 public interface ITradeBatchWriter
 {
@@ -13,47 +13,64 @@ public interface ITradeBatchWriter
 public sealed class TradeBatchWriter : ITradeBatchWriter, IHostedService
 {
     private readonly Channel<Trade> _channel;
+    // ChannelWriter<Trade> channelWriter;
+    //ChannelReader<Trade> chReader;
     private readonly TradeRepository _repo;
     private readonly ILogger<TradeBatchWriter> _logger;
     private long _processedCount;
+
+
+    // ✅ Добавим поле для задачи
     private Task? _processingTask;
 
-    public TradeBatchWriter(
-        TradeRepository repo,
-        ILogger<TradeBatchWriter> logger)
+    public long GetProcessedCount() => Interlocked.Read(ref _processedCount);
+
+    public TradeBatchWriter(TradeRepository repo, ILogger<TradeBatchWriter> logger)
     {
-        _repo = repo;
-        _logger = logger;
+        _repo = repo ?? throw new ArgumentNullException(nameof(repo));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _channel = Channel.CreateBounded<Trade>(new BoundedChannelOptions(50_000)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
             SingleWriter = false
         });
+        _logger.LogInformation("📦 TradeBatchWriter created.");
     }
 
-    public ValueTask AddAsync(Trade trade, CancellationToken ct = default) =>
-        _channel.Writer.TryWrite(trade)
-            ? default
-            : _channel.Writer.WriteAsync(trade, ct); // fallback для Wait
+    public ValueTask AddAsync(Trade trade, CancellationToken ct = default)
+    {
+        _logger.LogDebug("📥 [BatchWriter] AddAsync called for trade {TradeId}", trade.TradeId);
 
-    public long GetProcessedCount() => Interlocked.Read(ref _processedCount);
+        var result = _channel.Writer.WriteAsync(trade, ct); // ✅ Используем _channel.Writer
+
+        _logger.LogDebug("📊 Channel stats after WriteAsync: Count = {_channel.Reader.Count}", _channel.Reader.Count);
+
+        return result;
+    }
 
     public Task StartAsync(CancellationToken ct)
     {
-        _processingTask = Task.Run(() => ProcessBatchesAsync(ct), ct);
+        _logger.LogInformation("🚀 Batch processor service starting...");
+        _logger.LogDebug("🔧 Starting ProcessBatchesAsync directly...");
+
+        // Запускаем ProcessBatchesAsync напрямую (а не через Task.Run)
+        _processingTask = ProcessBatchesAsync(ct);
+
+        _logger.LogDebug("✅ ProcessBatchesAsync task created.");
         return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken ct)
     {
-        _logger.LogInformation("Stopping batch writer...");
-        _channel.Writer.Complete();
+        _logger.LogInformation("🛑 Stopping batch writer...");
+        _channel.Writer.Complete(); // ✅ Используем _channel.Writer
 
         if (_processingTask is not null)
         {
+            // ✅ Ждём завершения обработки с таймаутом
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(10)); // даем 10 сек на финальную выгрузку
+            cts.CancelAfter(TimeSpan.FromSeconds(10)); // 10 сек на завершение
 
             try
             {
@@ -61,70 +78,63 @@ public sealed class TradeBatchWriter : ITradeBatchWriter, IHostedService
             }
             catch (OperationCanceledException)
             {
-                _logger.LogWarning("Batch processor did not finish in time. Data may be lost.");
+                _logger.LogWarning("Batch processor did not finish in time.");
             }
         }
 
-        _logger.LogInformation("Batch writer stopped. Total trades: {Count}", _processedCount);
+        _logger.LogInformation("Batch writer stopped.");
     }
 
     private async Task ProcessBatchesAsync(CancellationToken ct)
     {
-        var batch = new List<Trade>(200);
-        var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250)); // 4 батча/сек
+        _logger.LogInformation("✅ Batch processor loop started.");
+        _logger.LogDebug("🔄 ProcessBatchesAsync entered.");
+        _logger.LogDebug("🔄 CancellationToken.IsCancellationRequested = {IsCancellationRequested}", ct.IsCancellationRequested);
 
-        _logger.LogInformation("🚀 Batch processor started.");
+        var batch = new List<Trade>(5);
+        _logger.LogDebug("🔄 Batch list created.");
 
         try
         {
-            while (await timer.WaitForNextTickAsync(ct))
+            _logger.LogDebug("🔄 Starting 'await foreach' read loop with ReadAllAsync...");
+
+            // ✅ Используем ReadAllAsync — он должен читать, даже если данные были до старта
+            await foreach (var trade in _channel.Reader.ReadAllAsync(ct))
             {
-                // Сборка батча
-                while (batch.Count < 200 && _channel.Reader.TryRead(out var trade))
-                {
-                    batch.Add(trade);
-                }
-
-                if (batch.Count > 0)
-                {
-                    var sw = Stopwatch.StartNew();
-                    await _repo.SaveBatchAsync(batch, ct);
-                    sw.Stop();
-
-                    Interlocked.Add(ref _processedCount, batch.Count);
-                    _logger.LogDebug(
-                        "Saved {Count} trades in {Ms} ms (avg {AvgMs} ms/trade)",
-                        batch.Count, sw.ElapsedMilliseconds,
-                        Math.Round(sw.ElapsedMilliseconds / (double)batch.Count, 2));
-
-                    batch.Clear();
-                }
-            }
-
-            // Финальная выгрузка
-            while (_channel.Reader.TryRead(out var trade))
-            {
+                _logger.LogDebug("📥 [READALL] Received trade {TradeId} from channel.", trade.TradeId);
                 batch.Add(trade);
-                if (batch.Count >= 200)
+                _logger.LogDebug("📥 Added trade {TradeId} to batch. Current batch size: {BatchSize}", trade.TradeId, batch.Count);
+
+                if (batch.Count >= 5)
                 {
-                    await _repo.SaveBatchAsync(batch, ct);
-                    Interlocked.Add(ref _processedCount, batch.Count);
+                    await FlushBatchAsync(batch, ct);
                     batch.Clear();
+                    _logger.LogDebug("💾 Flushed batch of 5 trades.");
                 }
             }
-            if (batch.Count > 0)
-            {
-                await _repo.SaveBatchAsync(batch, ct);
-                Interlocked.Add(ref _processedCount, batch.Count);
-            }
+
+            _logger.LogDebug("🔄 Channel closed, exiting read loop.");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             _logger.LogInformation("Batch processor cancelled.");
+            if (batch.Count > 0)
+            {
+                _logger.LogInformation("💾 Flushing remaining {Count} trades before exit.", batch.Count);
+                await FlushBatchAsync(batch, ct);
+            }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Batch processor crashed");
         }
+    }
+
+    private async Task FlushBatchAsync(List<Trade> batch, CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        await _repo.SaveBatchAsync(batch, ct);
+        sw.Stop();
+        _logger.LogInformation("✅ Saved {Count} trades in {Ms} ms", batch.Count, sw.ElapsedMilliseconds);
     }
 }

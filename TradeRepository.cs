@@ -1,8 +1,9 @@
 ﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Npgsql;
+using NpgsqlTypes;
 using System.Diagnostics;
 using System.Xml.Linq;
-using Microsoft.Extensions.Logging;
 
 public sealed class TradeRepository
 {
@@ -49,7 +50,8 @@ public sealed class TradeRepository
             await using var cmd = new NpgsqlCommand(sql, conn, tx);
 
             cmd.Parameters.Add(new NpgsqlParameter<string[]>("symbols", symbols));
-            cmd.Parameters.Add(new NpgsqlParameter<DateTime[]>("utimes", utimes));
+            var utimesParam = new NpgsqlParameter("utimes", NpgsqlDbType.TimestampTz) { Value = utimes };
+            cmd.Parameters.Add(utimesParam);
             cmd.Parameters.Add(new NpgsqlParameter<long[]>("tradeIds", tradeIds));
             cmd.Parameters.Add(new NpgsqlParameter<decimal[]>("prices", prices));
             cmd.Parameters.Add(new NpgsqlParameter<decimal[]>("quantities", quantities));
@@ -80,19 +82,6 @@ public sealed class TradeRepository
             {
                 await cmdc.ExecuteNonQueryAsync();
             }
-            /*
-            await using var cmd = new NpgsqlCommand(sql, conn)
-            {
-                Parameters =
-            {
-                new() { Value = trade.TradeTime },
-                new() { Value = trade.TradeId },
-                new() { Value = trade.Price },
-                new() { Value = trade.Quantity }
-            }
-            };
-            await cmd.ExecuteNonQueryAsync(ct);
-            */
         }
         catch (Exception ex)
         {

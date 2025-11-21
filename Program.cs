@@ -13,6 +13,7 @@ Log.Logger = new LoggerConfiguration()
 
 try
 {
+    Log.Information("------------------------------------------------");
     Log.Information("Starting up...");
 
     var builder = Host.CreateApplicationBuilder(args);
@@ -24,7 +25,6 @@ try
         builder.Configuration.GetSection(nameof(AppOptions)));
 
     builder.Services.AddScoped<TradeRepository>();
-
     builder.Services.AddSingleton<ITradeBatchWriter, TradeBatchWriter>();
     builder.Services.AddHostedService<TradeBatchWriter>(); // ← он же IHostedService
     builder.Services.AddHostedService<BinanceWsClient>();

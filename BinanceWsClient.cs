@@ -107,6 +107,7 @@ public sealed class BinanceWsClient : BackgroundService
 
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
+        _log.LogInformation("ReceiveLoopAsync starting");
         var buffer = new ArraySegment<byte>(new byte[8192]); // Binance сообщения обычно <4KB
         using var pingCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var lastMessageTime = DateTime.UtcNow;
@@ -131,6 +132,9 @@ public sealed class BinanceWsClient : BackgroundService
                     result = await _ws.ReceiveAsync(buffer, ct);
                     lastMessageTime = DateTime.UtcNow; // обновляем при любом сообщении
 
+                    //_log.LogDebug("📥 Received fragment: Type={Type}, Count={Count}, EndOfMessage={EndOfMessage}",
+                    //result.MessageType, result.Count, result.EndOfMessage);
+
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
                         _log.LogInformation("Binance closed WebSocket: {Status} - {Desc}",
@@ -140,27 +144,34 @@ public sealed class BinanceWsClient : BackgroundService
 
                     if (result.MessageType == WebSocketMessageType.Text)
                     {
-                        sb.Append(Encoding.UTF8.GetString(buffer.Array!, buffer.Offset, result.Count));
+                        var text = Encoding.UTF8.GetString(buffer.Array!, buffer.Offset, result.Count);
+                        //_log.LogDebug("📄 Text fragment: {Text}", text.Length > 100 ? text[..100] : text);
+                        sb.Append(text);
+                    }
+                    else if (result.MessageType == WebSocketMessageType.Binary)
+                    {
+                        _log.LogDebug("📄 Received binary message of {Count} bytes", result.Count);
                     }
 
                 } while (!result.EndOfMessage && !ct.IsCancellationRequested);
 
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
-                    /*
-                     * → Binance никогда не отправляет текстовое "ping" в стриме @trade
-                    if (sb.ToString().Contains("ping") )
-                    {
-                        Console.WriteLine("PING");
-                    }
-                    */
-                    await HandleMessageAsync(sb.ToString(), ct);
+                    var fullJson = sb.ToString();
+                    //_log.LogDebug("📄 Full JSON received: {Json}", fullJson.Length > 200 ? fullJson[..200] : fullJson);
+
+                    // ✅ Вызов HandleMessageAsync
+                    await HandleMessageAsync(fullJson, ct);
+                    _log.LogDebug("📤 HandleMessageAsync called successfully.");
+                }
+                else
+                {
+                    _log.LogDebug("result.MessageType != WebSocketMessageType.Text");
                 }
             }
         }
         catch (WebSocketException wsex) when (wsex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
         {
-            //Console.WriteLine("Binance closed connection prematurely (normal). Reconnecting...");
             _log.LogInformation("Binance closed connection prematurely (normal). Reconnecting...");
             return; // выйти из ReceiveLoop, чтобы запустить reconnect
         }
@@ -180,7 +191,8 @@ public sealed class BinanceWsClient : BackgroundService
 
     private async Task HandleMessageAsync(string json, CancellationToken ct)
     {
-        
+        //_log.LogDebug("HandleMessageAsync called with JSON: {JsonLength} chars", json.Length);
+
         try
         {
             using var doc = JsonDocument.Parse(json);
@@ -188,16 +200,34 @@ public sealed class BinanceWsClient : BackgroundService
 
             // Более надёжная проверка
             if (!root.TryGetProperty("e", out var e) || e.GetString() != "trade")
+            {
+                _log.LogWarning("❌ No 'e' property in JSON: {JsonPreview}", json.Length > 100 ? json[..100] : json);
                 return;
+            }
+            var eventType = e.GetString();
+            //_log.LogDebug("Event type: '{EventType}'", eventType);
+            
+            if (eventType != "trade")
+            {
+                _log.LogDebug("Skipping non-trade event: '{EventType}'", eventType);
+                return;
+            }
 
             if (!root.TryGetProperty("s", out var s) || s.ValueKind != JsonValueKind.String)
+            {
+                _log.LogWarning("❌ No valid 's' (symbol) property in JSON: {JsonPreview}", json.Length > 100 ? json[..100] : json);
                 return;
-
+            }
             var symbol = s.GetString();
-            if (string.IsNullOrWhiteSpace(symbol)) return;
+            //_log.LogDebug("Symbol: {Symbol}", symbol);
+
+            if (string.IsNullOrWhiteSpace(symbol))
+            {
+                _log.LogWarning("❌ Empty symbol in JSON: {JsonPreview}", json.Length > 100 ? json[..100] : json);
+                return;
+            }
 
             // ✅ Защита от SQL-инъекции (если таблицы динамические)
-            //_log.LogInformation("📨 Added trade {Symbol} to batch", symbol);
             if (!IsValidSymbol(symbol))
             {
                 _log.LogWarning("Invalid symbol received: {Symbol}", symbol);
@@ -230,6 +260,8 @@ public sealed class BinanceWsClient : BackgroundService
                 LogProgress(count); // вынесено в отдельный метод
             }
 
+            //_log.LogDebug("Adding trade {Symbol} to batch (ID: {TradeId}, Price: {Price})", trade.Symbol, trade.TradeId, trade.Price);
+
             // ✅ Батчинг
             try
             {
@@ -238,11 +270,13 @@ public sealed class BinanceWsClient : BackgroundService
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 // Штатное завершение — не логируем как ошибку
+                _log.LogInformation("Batch writer cancelled during AddAsync");
                 return;
             }
             catch (Exception ex)
             {
                 _log.LogWarning(ex, "Failed to add trade to batch");
+                throw;
             }
         }
         catch (Exception ex)
