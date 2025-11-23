@@ -84,7 +84,7 @@ public sealed class BinanceWsClient : BackgroundService
                 }
 
                 _ws = new ClientWebSocket();
-                Console.WriteLine($"{DateTime.Now} Connecting to {url}");
+                _log.LogInformation($"{DateTime.Now} Connecting to {url}");
                 await _ws.ConnectAsync(new Uri(url), ct);
                 await ReceiveLoopAsync(ct);
                 // Если вышли из ReceiveLoop — соединение закрыто штатно
@@ -92,15 +92,15 @@ public sealed class BinanceWsClient : BackgroundService
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                Console.WriteLine ($"{DateTime.Now} Binance connection canceled.");
+                _log.LogInformation($"{DateTime.Now} Binance connection canceled.");
                 break;
             }
             catch (Exception ex)
             {
                 //Console.WriteLine($"{DateTime.Now} Binance WebSocket error. {ex.Message}");
-                Console.WriteLine ($"{DateTime.Now} Reconnecting in {delay}s...");
+                _log.LogInformation($"{DateTime.Now} Reconnecting in {delay}s...");
                 await Task.Delay(delay, ct);
-                Console.WriteLine($"Reconnect : {++CountReconnect}");
+                _log.LogInformation($"Reconnect : {++CountReconnect}");
             }
         }
     }
@@ -162,7 +162,7 @@ public sealed class BinanceWsClient : BackgroundService
 
                     // ✅ Вызов HandleMessageAsync
                     await HandleMessageAsync(fullJson, ct);
-                    _log.LogDebug("📤 HandleMessageAsync called successfully.");
+                    //_log.LogDebug("📤 HandleMessageAsync called successfully.");
                 }
                 else
                 {

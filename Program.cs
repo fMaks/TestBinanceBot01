@@ -25,9 +25,18 @@ try
         builder.Configuration.GetSection(nameof(AppOptions)));
 
     builder.Services.AddScoped<TradeRepository>();
-    builder.Services.AddSingleton<ITradeBatchWriter, TradeBatchWriter>();
-    builder.Services.AddHostedService<TradeBatchWriter>(); // ← он же IHostedService
+
+    builder.Services.AddSingleton<TradeBatchWriter>();
+    builder.Services.AddSingleton<ITradeBatchWriter>(provider => provider.GetRequiredService<TradeBatchWriter>());
+    builder.Services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<TradeBatchWriter>());
     builder.Services.AddHostedService<BinanceWsClient>();
+    /*
+    builder.Services.AddSingleton<TradeBatchWriter>();
+    //builder.Services.AddSingleton<ITradeBatchWriter, TradeBatchWriter>();
+    builder.Services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<TradeBatchWriter>());
+    //builder.Services.AddHostedService<TradeBatchWriter>();
+    builder.Services.AddHostedService<BinanceWsClient>();
+    */
 
     var host = builder.Build();
     Log.Information("Application built. Running...");

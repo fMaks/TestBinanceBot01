@@ -19,6 +19,32 @@ public sealed class TradeRepository
 
     public async Task SaveBatchAsync(List<Trade> trades, CancellationToken ct = default)
     {
+        using var connection = new NpgsqlConnection(_conn);
+        await connection.OpenAsync(ct);
+
+        using var batch = new NpgsqlBatch(connection);
+
+        foreach (var trade in trades)
+        {
+            //var command = new NpgsqlBatchCommand(
+            //"INSERT INTO trades (symbol, utime, trade_id, price, quantity) VALUES (@symbol, @utime, @trade_id, @price, @quantity)");
+            var command = new NpgsqlBatchCommand(
+                "INSERT INTO trades (symbol, utime, trade_id, price, quantity) VALUES ($1, $2, $3, $4, $5)");
+
+            command.Parameters.Add(new NpgsqlParameter { Value = trade.Symbol });
+            command.Parameters.Add(new NpgsqlParameter { Value = trade.TradeTime });
+            command.Parameters.Add(new NpgsqlParameter { Value = trade.TradeId });
+            command.Parameters.Add(new NpgsqlParameter { Value = trade.Price });
+            command.Parameters.Add(new NpgsqlParameter { Value = trade.Quantity });
+
+            batch.BatchCommands.Add(command);
+        }
+
+        await batch.ExecuteNonQueryAsync(ct);
+    }
+    /*
+    public async Task SaveBatchAsync(List<Trade> trades, CancellationToken ct = default)
+    {
         _logger.LogInformation("Saving batch of {Count} trades", trades.Count);
         if (trades.Count == 0) return;
 
@@ -66,6 +92,7 @@ public sealed class TradeRepository
             throw;
         }
     }
+    */
 
     private static bool IsValidSymbol(string symbol) =>
         !string.IsNullOrWhiteSpace(symbol) && symbol.All(c => char.IsLetterOrDigit(c));
