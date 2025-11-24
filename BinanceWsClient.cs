@@ -295,16 +295,6 @@ public sealed class BinanceWsClient : BackgroundService
     private void LogProgress(ulong count)
     {
         if (!Environment.UserInteractive) return;
-
-        try
-        {
-            var pos = Console.GetCursorPosition();
-            Console.SetCursorPosition(0, 0);
-            Console.Write($"Trades: {count,12}  "); // 2 пробела — затираем старое
-            if (pos.Left < Console.BufferWidth && pos.Top < Console.BufferHeight)
-                Console.SetCursorPosition(pos.Left, pos.Top);
-        }
-        catch { /* игнорируем ошибки консоли */ }
     }
 
     private async Task CloseWebSocketAsync(CancellationToken ct)

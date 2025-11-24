@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using System.Diagnostics;
 using System.Threading.Channels;
 
+using TestBinanceBot01.Services;
 
 public interface ITradeBatchWriter
 {
@@ -18,8 +19,9 @@ public sealed class TradeBatchWriter : ITradeBatchWriter, IHostedService
     //ChannelReader<Trade> chReader;
     private readonly TradeRepository _repo;
     private readonly ILogger<TradeBatchWriter> _logger;
+    private readonly IStatisticsService _stats;
     private readonly int _batchSize;
-    private long _processedCount;
+    private long _processedCount = 0;
 
 
     // ✅ Добавим поле для задачи
@@ -27,10 +29,11 @@ public sealed class TradeBatchWriter : ITradeBatchWriter, IHostedService
 
     public long GetProcessedCount() => Interlocked.Read(ref _processedCount);
 
-    public TradeBatchWriter(TradeRepository repo, ILogger<TradeBatchWriter> logger, IOptions<AppOptions> options)
+    public TradeBatchWriter(TradeRepository repo, ILogger<TradeBatchWriter> logger, IOptions<AppOptions> options, IStatisticsService stats)
     {
         _repo = repo ?? throw new ArgumentNullException(nameof(repo));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _stats = stats ?? throw new ArgumentNullException(nameof(stats));
         _batchSize = options.Value.BatchSize;
         _channel = Channel.CreateBounded<Trade>(new BoundedChannelOptions(50_000)
         {
@@ -141,6 +144,9 @@ public sealed class TradeBatchWriter : ITradeBatchWriter, IHostedService
         var sw = Stopwatch.StartNew();
         await _repo.SaveBatchAsync(batch, ct);
         sw.Stop();
+        _stats.IncrementProcessedCount(batch.Count);
         _logger.LogDebug("✅ Saved {Count} trades in {Ms} ms", batch.Count, sw.ElapsedMilliseconds);
     }
+
+    long ITradeBatchWriter.GetProcessedCount() => _stats.GetProcessedCount();
 }

@@ -5,6 +5,8 @@ using Microsoft.Extensions.Logging;
 using Npgsql;
 using Serilog;
 
+using TestBinanceBot01.Services;
+
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(new ConfigurationBuilder()
         .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
@@ -30,6 +32,8 @@ try
     builder.Services.AddSingleton<ITradeBatchWriter>(provider => provider.GetRequiredService<TradeBatchWriter>());
     builder.Services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<TradeBatchWriter>());
     builder.Services.AddHostedService<BinanceWsClient>();
+    builder.Services.AddSingleton<IStatisticsService, StatisticsService>();
+    builder.Services.AddHostedService<KeyPressService>();
     /*
     builder.Services.AddSingleton<TradeBatchWriter>();
     //builder.Services.AddSingleton<ITradeBatchWriter, TradeBatchWriter>();
