@@ -12,33 +12,64 @@ using System.Threading;
 
 public sealed class BinanceWsClient : BackgroundService
 {
-    //private readonly TradeRepository _repo;
-    private readonly AppOptions _opt;
+    private readonly IOptionsMonitor<AppOptions> _opt;
     private readonly ILogger<BinanceWsClient> _log;
     private readonly ITradeBatchWriter _batchWriter;
-    ulong CountTick = 0;
+    private readonly string _connectionString;
+    private CancellationTokenSource? _receiveCts;
+    private readonly ISymbolValidator _symbolValidator;
+    private readonly IAppConfigManager _configManager;
+
     int CountReconnect = 0;
 
     private ClientWebSocket? _ws;
-    private readonly string _connectionString;
+    private string _wsUrl;
+    private volatile bool _reconnectRequested = false;
+    private volatile HashSet<string> _currentSymbols = new(StringComparer.OrdinalIgnoreCase);
 
     public BinanceWsClient(
         ITradeBatchWriter batchWriter,
-        IOptions<AppOptions> opt,
+        IOptionsMonitor<AppOptions> opt,
         IConfiguration configuration,
-        ILogger<BinanceWsClient> log)
+        ILogger<BinanceWsClient> log,
+        ISymbolValidator symbolValidator,
+        IAppConfigManager configManager)
     {
         _batchWriter = batchWriter;
-        _opt = opt.Value;
+        _configManager = configManager;
+        _opt = opt;
+        _symbolValidator = symbolValidator;
         _connectionString = configuration.GetConnectionString("Postgres")
                             ?? throw new InvalidOperationException("Missing 'Postgres' connection string");
         _log = log;
+
+        _opt.OnChange(async options =>
+        {
+            // ✅ Валидируем и получаем **только валидные** символы
+            var validSymbols = new HashSet<string>(
+                await _configManager.GetValidatedSymbolsAsync(_symbolValidator, CancellationToken.None),
+                StringComparer.OrdinalIgnoreCase);
+
+            _log.LogDebug("Validated symbols from config: {Symbols}", string.Join(", ", validSymbols));
+
+            // ✅ Сравниваем с текущими валидными символами
+            if (!validSymbols.SetEquals(_currentSymbols)) // ❗ _currentSymbols — поле класса
+            {
+                _log.LogInformation("🔄 Symbols changed: {Old} -> {New}. Requesting reconnect...",
+                    string.Join(",", _currentSymbols),
+                    string.Join(",", validSymbols));
+
+                _currentSymbols = validSymbols; // ✅ Обновляем поле
+                _reconnectRequested = true;
+
+                // ✅ Прерываем текущий ReceiveLoop
+                _receiveCts?.Cancel();
+            }
+        });
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        var url = $"wss://stream.binance.com:9443/ws/{string.Join('/', _opt.Symbols.Select(s => $"{s.ToLower()}@trade"))}";
-
         // 🔹 Тест подключения к БД
         using (var conn = new NpgsqlConnection(_connectionString))
         {
@@ -56,16 +87,29 @@ public sealed class BinanceWsClient : BackgroundService
             }
         }
 
+        // ✅ Валидируем и получаем символы ОДИН раз при запуске
+        var currentSymbols = new HashSet<string>(
+            await _configManager.GetValidatedSymbolsAsync(_symbolValidator, ct),
+            StringComparer.OrdinalIgnoreCase);
+
+        _log.LogInformation("Initial validated symbols: {Symbols}", string.Join(", ", currentSymbols));
+
         while (!ct.IsCancellationRequested)
         {
             try
             {
+                // ✅ НЕ вызываем GetValidatedSymbolsAsync второй раз!
+                // Вместо этого — используем IOptionsMonitor для отслеживания изменений
+                // и валидируем в OnChange
+
+                var url = $"wss://stream.binance.com:9443/ws/{string.Join('/', currentSymbols.Select(s => $"{s.ToLower()}@trade"))}";
+
                 await ConnectAndReceiveAsync(url, ct);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
-                _log.LogError(ex.Message, $"{DateTime.Now} WebSocket error, reconnect in 5 s");
+                _log.LogError(ex, "WebSocket error, reconnecting in 5 seconds...");
                 await Task.Delay(TimeSpan.FromSeconds(5), ct);
             }
         }
@@ -86,7 +130,12 @@ public sealed class BinanceWsClient : BackgroundService
                 _ws = new ClientWebSocket();
                 _log.LogInformation($"{DateTime.Now} Connecting to {url}");
                 await _ws.ConnectAsync(new Uri(url), ct);
-                await ReceiveLoopAsync(ct);
+                // ✅ СБРАСЫВАЕМ флаг ПОСЛЕ успешного подключения
+                _reconnectRequested = false;
+                // ✅ Создаём новый CancellationTokenSource для ReceiveLoop
+                _receiveCts?.Cancel(); // Прерываем предыдущий цикл
+                _receiveCts = new CancellationTokenSource();
+                await ReceiveLoopAsync(_receiveCts.Token);
                 // Если вышли из ReceiveLoop — соединение закрыто штатно
                 break;
             }
@@ -117,6 +166,12 @@ public sealed class BinanceWsClient : BackgroundService
         {
             while (_ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
             {
+                // ✅ Проверяем, нужно ли переподключиться
+                if (_reconnectRequested)
+                {
+                    _log.LogInformation("Reconnect requested during ReceiveLoop. Exiting...");
+                    return; // Выходим из цикла
+                }
                 // Таймаут неактивности
                 if ((DateTime.UtcNow - lastMessageTime).TotalSeconds > 60)
                 {
@@ -174,6 +229,12 @@ public sealed class BinanceWsClient : BackgroundService
         {
             _log.LogInformation("Binance closed connection prematurely (normal). Reconnecting...");
             return; // выйти из ReceiveLoop, чтобы запустить reconnect
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // ✅ Не логируем как ошибку — это нормальное поведение
+            _log.LogDebug("ReceiveLoop canceled (reconnect requested or shutdown).");
+            return;
         }
         catch (Exception ex)
         {
@@ -253,15 +314,6 @@ public sealed class BinanceWsClient : BackgroundService
                     : DateTime.UtcNow
             );
 
-            // 🔹 Счётчик
-            var count = Interlocked.Increment(ref CountTick);
-            if (count % 100 == 0)
-            {
-                LogProgress(count); // вынесено в отдельный метод
-            }
-
-            //_log.LogDebug("Adding trade {Symbol} to batch (ID: {TradeId}, Price: {Price})", trade.Symbol, trade.TradeId, trade.Price);
-
             // ✅ Батчинг
             try
             {
@@ -292,11 +344,6 @@ public sealed class BinanceWsClient : BackgroundService
         symbol.Length is >= 4 and <= 20 &&
         symbol.All(c => char.IsLetterOrDigit(c));
 
-    private void LogProgress(ulong count)
-    {
-        if (!Environment.UserInteractive) return;
-    }
-
     private async Task CloseWebSocketAsync(CancellationToken ct)
     {
         if (_ws is null) return;
@@ -317,6 +364,13 @@ public sealed class BinanceWsClient : BackgroundService
             _ws.Dispose();
             _ws = null;
         }
+    }
+
+    private async Task<List<string>> GetValidatedSymbolsAsync(List<string> symbols, CancellationToken ct)
+    {
+        var localSymbols = symbols.Select(s => s.ToUpperInvariant()).ToList();
+        var validatedSymbols = await _symbolValidator.ValidateSymbolsAsync(localSymbols, ct);
+        return validatedSymbols;
     }
 
     public override void Dispose()

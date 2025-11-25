@@ -34,13 +34,10 @@ try
     builder.Services.AddHostedService<BinanceWsClient>();
     builder.Services.AddSingleton<IStatisticsService, StatisticsService>();
     builder.Services.AddHostedService<KeyPressService>();
-    /*
-    builder.Services.AddSingleton<TradeBatchWriter>();
-    //builder.Services.AddSingleton<ITradeBatchWriter, TradeBatchWriter>();
-    builder.Services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<TradeBatchWriter>());
-    //builder.Services.AddHostedService<TradeBatchWriter>();
-    builder.Services.AddHostedService<BinanceWsClient>();
-    */
+    builder.Services.AddSingleton<IBinanceConnectionManager, BinanceConnectionManager>();
+    builder.Services.AddHttpClient<SymbolValidator>();
+    builder.Services.AddSingleton<ISymbolValidator, SymbolValidator>();
+    builder.Services.AddSingleton<IAppConfigManager, AppConfigManager>();
 
     var host = builder.Build();
     Log.Information("Application built. Running...");
